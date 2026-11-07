@@ -2,5 +2,26 @@ As a devops Engineer. I want to create a project end to end means code to deploy
 create a simple voting application as per below
 - user can vote to below animals
   loin, tiger, dog and cat
-voter will be random. 
+voter will be random.
 admin can see the result
+
+---
+
+## Project Phases
+
+1. **Phase 1 — App:** scaffold frontend, backend, DB schema; `docker compose` works locally.
+2. **Phase 2 — CI/CD:** Jenkins pipeline building + publishing images.
+3. **Phase 3 — Deploy:** Helm chart → staging/prod K8s, Terraform for infra.
+4. **Phase 4 — Observe:** Prometheus/Grafana/Loki + alerts; dashboards for every service.
+
+---
+
+## CI/CD Pipeline
+
+Use **Jenkins** (not GitHub Actions) as the CI/CD pipeline:
+
+- Jenkinsfile (declarative pipeline) with stages: lint → unit/integration tests → docker build & push → deploy.
+- Image build & push to a registry (GHCR/DockerHub/private), tagged `:latest` + `:sha`.
+- Trivy/docker scan image vulnerability check before deploy.
+- Staging deploy auto after merge; production deploy gated by approval/tag.
+- Jenkins triggers on commits to `main` (webhook / polling).
