@@ -3,6 +3,20 @@
 An end-to-end DevOps project: **code → CI/CD → deployment → monitoring**.
 The application itself is intentionally simple — the real deliverable is the delivery and observability pipeline around it.
 
+## ⚡ Current Status — Session Handoff
+
+> **Workflow:** Claude sessions are 1 hour long. This section is the handoff — read it first to resume work. Latest session date: **Session 1**.
+
+- **Phase 1 — App: ✅ CODE BUILT, ⏳ NOT YET VERIFIED**
+  - Built: `backend/` (Node.js + Express — `/api/vote`, `/api/results`, `/healthz`, `/metrics`), `frontend/` (Nginx — vote page `/` + admin results `/admin.html`), `voter-simulator/` (random vote every 2s), `docker-compose.yml`, `Makefile`, `POC_GUIDE.md`.
+  - **NEXT ACTION (on my Ubuntu machine):** `make build && make up && make verify`, then open `http://localhost:8080` and `http://localhost:8080/admin.html`. Full runbook + troubleshooting: **`POC_GUIDE.md`**.
+  - Note: frontend is **static HTML/JS** for now (no React build) — keeps the POC verifiable with zero build tooling. React+Vite can replace it later.
+- **Phase 2 — CI/CD: ⏳ NOT STARTED** — Jenkins (declarative `Jenkinsfile`) + SonarQube quality gate + Trivy image scan. *(Wait until Phase 1 is verified.)*
+- **Phase 3 — Deploy: ⏳ DEFERRED BY USER** — Terraform → AWS EKS + Helm chart. Explicitly paused; do NOT start until the app is verified.
+- **Not yet in repo:** `deploy/` (terraform/helm/k8s), `monitoring/`, `Jenkinsfile`, `sonar-project.properties` — all belong to future phases.
+
+---
+
 ## Requirements
 
 - Users can vote for one of **Lion, Tiger, Dog, Cat**
@@ -99,25 +113,20 @@ CREATE TABLE votes (
 
 ---
 
-## 5. Repository Layout (planned)
+## 5. Repository Layout
 
 ```
 voting-app/
-├── frontend/            # React + Vite SPA (Dockerfile → Nginx)
-├── backend/             # Node.js + Express API (Dockerfile)
-├── voter-simulator/     # random-vote traffic generator (k6 or script)
-├── deploy/
-│   ├── docker-compose.yml      # local dev stack
-│   ├── k8s/                     # raw manifests
-│   ├── helm/voting-app/         # Helm chart (prod)
-│   └── terraform/               # cloud provisioning (optional)
-├── monitoring/
-│   ├── prometheus.yml
-│   ├── grafana/dashboards/
-│   └── alerts/
-├── Jenkinsfile               # Jenkins declarative pipeline (CI/CD)
-├── sonar-project.properties  # SonarQube analysis config (backend/frontend)
-└── Makefile                  # dev/deploy/monitoring targets
+├── backend/             # ✅ Node.js + Express API (Dockerfile) — DONE
+├── frontend/            # ✅ Nginx + static HTML/JS pages (Dockerfile) — DONE
+├── voter-simulator/     # ✅ random-vote traffic generator (Dockerfile) — DONE
+├── docker-compose.yml   # ✅ local dev stack — DONE
+├── Makefile             # ✅ build/up/down/ps/logs/verify/clean — DONE
+├── POC_GUIDE.md         # ✅ runbook for verifying the app on Ubuntu — DONE
+├── deploy/              # ⏳ future — k8s/, helm/voting-app/, terraform/ (Phase 3)
+├── monitoring/          # ⏳ future — prometheus.yml, grafana/, alerts/ (Phase 4)
+├── Jenkinsfile          # ⏳ future — Jenkins declarative pipeline (Phase 2)
+└── sonar-project.properties  # ⏳ future — SonarQube config (Phase 2)
 
 ---
 
@@ -154,17 +163,16 @@ lint → unit/integration tests → SonarQube analysis + quality gate → docker
 
 ---
 
-## 7. Make Targets / Tooling (will be added with the scaffold)
+## 7. Make Targets / Tooling
 
-`make build`, `make up`, `make down`, `make test`, `make lint`, `make deploy-staging`,
-`make deploy-prod`, `make observability-up` — each maps to the Docker/Helm/Terraform commands above.
-*(README is the design blueprint; commands land in the repo as the scaffold is created.)*
+Implemented in the repo `Makefile` (Phase 1): `make build`, `make up`, `make down`, `make ps`, `make logs <svc>`, `make verify`, `make clean`.
+Future phases add: `make test`, `make lint`, `make deploy-staging`, `make deploy-prod`, `make observability-up` — mapping to the Docker/Helm/Terraform commands above.
 
 ---
 
 ## Roadmap
 
-1. **Phase 1 — App:** scaffold frontend, backend, DB schema; `docker compose` works locally.
-2. **Phase 2 — CI/CD:** Jenkins (declarative `Jenkinsfile`) pipeline building + publishing images, with **SonarQube** code quality gate.
-3. **Phase 3 — Deploy:** Helm chart → staging/prod K8s, Terraform for infra.
-4. **Phase 4 — Observe:** Prometheus/Grafana/Loki + alerts; dashboards for every service.
+1. **Phase 1 — App:** ✅ **code built** (backend, frontend, simulator, compose, Makefile) — ⏳ **pending verification** on the user's Ubuntu machine (`make build && make up && make verify`). *(Frontend is static HTML/JS for now; can swap to React+Vite later.)*
+2. **Phase 2 — CI/CD:** ⏳ **next** — Jenkins (declarative `Jenkinsfile`) pipeline building + publishing images, with **SonarQube** code quality gate.
+3. **Phase 3 — Deploy:** ⏳ deferred — Helm chart → staging/prod K8s, Terraform for infra (AWS EKS). **Explicitly paused until Phase 1 verified.**
+4. **Phase 4 — Observe:** ⏳ — Prometheus/Grafana/Loki + alerts; dashboards for every service.
