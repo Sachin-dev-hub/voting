@@ -63,7 +63,8 @@ The application itself is intentionally simple — the real deliverable is the d
 | **Database**  | **PostgreSQL**                            | Reliable source of truth, aggregates votes, standard in K8s ops |
 | **Cache**     | **Redis**                                 | Vote buffer + rate limiting; classic demo of an in-memory tier |
 | **Voter sim** | **k6** (or tiny Go/Node script)           | Generates realistic random traffic for load + monitoring demo |
-| **CI/CD**     | **GitHub Actions**                        | Lint → test → build/push images (GHCR) → deploy            |
+| **CI/CD**     | **Jenkins**                               | Declarative `Jenkinsfile`: lint → test → build/push images (GHCR) → deploy |
+| **Code Quality** | **SonarQube**                         | Static analysis (bugs, vulnerabilities, code smells, coverage) + quality gate in CI |
 | **IaC**       | **Terraform** (optional)                  | Provision cloud infra / managed K8s                        |
 | **Orchestration** | **Docker Compose** (dev) → **Kubernetes + Helm** (prod) | Same image, dev→prod parity |
 | **Monitoring**| **Prometheus + Grafana**                  | Metrics + dashboards; Node & Postgres exporters, Alertmanager |
@@ -114,20 +115,25 @@ voting-app/
 │   ├── prometheus.yml
 │   ├── grafana/dashboards/
 │   └── alerts/
-└── .github/workflows/  # CI/CD pipeline
-```
+├── Jenkinsfile               # Jenkins declarative pipeline (CI/CD)
+├── sonar-project.properties  # SonarQube analysis config (backend/frontend)
+└── Makefile                  # dev/deploy/monitoring targets
 
 ---
 
 ## 6. DevOps Pipeline (the actual focus)
 
-### 6.1 CI/CD (GitHub Actions, on push/PR to `main`)
+### 6.1 CI/CD (Jenkins, triggers on commits to `main`)
 ```
-lint → unit/integration tests → docker build & push (GHCR, :latest + :sha)
-   → helm template (validate) → deploy to staging (auto) → prod (manual/approval)
+Jenkinsfile (declarative):
+lint → unit/integration tests → SonarQube analysis + quality gate → docker build & push (:latest + :sha)
+   → Trivy image scan → deploy to staging (auto) → prod (manual approval)
 ```
-- Trivy/`docker scan` image vulnerability check before deploy.
-- Staging deploy auto after merge; production deploy gated by approval or tag.
+- **Trigger:** Jenkins polls / webhooks on commits to `main`.
+- **Registry:** GHCR/DockerHub/private, images tagged `:latest` + `:sha`.
+- **Code scanning:** **SonarQube** static analysis — bugs, vulnerabilities, code smells, and test coverage; the **quality gate** must pass before the image is built/pushed (failing the gate fails the build).
+- **Security gate:** Trivy/docker image vulnerability scan before any deploy.
+- **Deploy:** staging auto after merge to `main`; production gated by approval/tag.
 
 ### 6.2 Deployment
 - **Dev:** `docker compose up --build` — one command, full stack.
@@ -159,6 +165,6 @@ lint → unit/integration tests → docker build & push (GHCR, :latest + :sha)
 ## Roadmap
 
 1. **Phase 1 — App:** scaffold frontend, backend, DB schema; `docker compose` works locally.
-2. **Phase 2 — CI/CD:** GitHub Actions pipeline building + publishing images.
+2. **Phase 2 — CI/CD:** Jenkins (declarative `Jenkinsfile`) pipeline building + publishing images, with **SonarQube** code quality gate.
 3. **Phase 3 — Deploy:** Helm chart → staging/prod K8s, Terraform for infra.
 4. **Phase 4 — Observe:** Prometheus/Grafana/Loki + alerts; dashboards for every service.
