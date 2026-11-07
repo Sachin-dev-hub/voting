@@ -1,0 +1,6 @@
+As a devops Engineer. I want to create a project end to end means code to deployment and monitoring. Mainly my focus on devops task not on the code.
+create a simple voting application as per below
+- user can vote to below animals
+  loin, tiger, dog and cat
+voter will be random. 
+admin can see the result
