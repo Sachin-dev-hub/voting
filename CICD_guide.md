@@ -1,6 +1,6 @@
 # CI/CD Guide — Phase 2 (Jenkins + SonarQube + Trivy)
 
-> Predecessor: `POC_GUIDE.md` (Phase 1 — ✅ verified). This file is the **plan/suggestion** for Phase 2 — the current phase. Implementation starts now; see the deliverables checklist in §9.
+> Predecessor: `POC_GUIDE.md` (Phase 1 — ✅ verified). This file is the **walkthrough** for Phase 2. Jenkins is already running on Oracle Ubuntu at `http://<ORACLE_PUBLIC_IP>:8080` — this guide takes you from that box to a green pipeline. Progress checklist: §9.
 >
 > Requirement source: `requirement` + README §6.1. Stack constraints from the user: **Jenkins** (declarative pipeline), **SonarQube** (quality gate), **Trivy** (image security scan). Target registry is GitHub, so GHCR is recommended below.
 
@@ -46,55 +46,81 @@ These are the honest gaps a pipeline would trip on. None require real app work.
 
 ---
 
-## 4. Jenkins setup (suggestion)
+## 4. Your running Jenkins — Oracle Ubuntu on `:8080`
 
-Run Jenkins **as a container** on the machine that also has Docker (or any box with Docker Engine + Compose):
+Jenkins is **already installed and running** — don't reinstall. This section is verify + wire-up.
 
-```bash
-docker run -d --name jenkins \
-  -p 8081:8080 -p 50000:50000 \
-  -v jenkins_home:/var/jenkins_home \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  jenkins/jenkins:lts-jdk21
-```
+**URL:** `http://<ORACLE_PUBLIC_IP>:8080` (replace `<ORACLE_PUBLIC_IP>` with the VM's public IP everywhere in this guide).
 
-- **Docker socket mount** (not DinD): Jenkins can run `docker` from within the pipeline via the **Docker Pipeline** plugin — the classic approach, no nested daemon. Alternative if you prefer isolation: a Jenkins agent with Docker, or run builds in Kubernetes (skip for now).
-- **Plugins to install** (Manage Jenkins → Plugins): `Pipeline`, `Git`, `GitHub`, `Docker Pipeline`, `Blue Ocean` (visibility), `SonarQube Scanner`, `Pipeline Utility Steps`, `Credentials Binding`, `Timestamper`.
+First-time unlock (only if you haven't logged in yet) — the initial admin password is:
+- Native install (ubuntu `jenkins` apt package): `sudo cat /var/lib/jenkins/secrets/initialAdminPassword`
+- Container install: `docker logs <jenkins-container>`
 
-**SonarQube** (one container, same host):
+### 4.1 Open port 8080 (needed for UI **and** webhook)
+Oracle VMs block inbound at **two layers** — both must allow 8080:
 
+1. **OCI firewall** — OCI console: VCN → Subnet → Security List (or NSG) → add **Ingress rule**: Source `0.0.0.0/0`, TCP destination port `8080`. Add `9000` too if SonarQube runs on this box (§4.4).
+2. **OS firewall** — on the VM: `sudo ufw status`; if active, `sudo ufw allow 8080/tcp` (and `sudo ufw allow 9000/tcp`).
+
+> The GitHub webhook (§5.2) needs this too — the webhook **"ping" turning green** in GitHub is your end-to-end proof that 8080 is reachable from the internet.
+
+### 4.2 Jenkins must be able to run Docker (Stages 4–6 need it)
+The pipeline builds and pushes images **on this box**, so Docker must work as the Jenkins user/container.
+
+- Quick check: run a **freestyle job** with a shell step `docker ps`, or on the box itself: `sudo -u jenkins docker ps` (native install).
+- If permission denied:
+  - **Native install** (`.deb`/apt): `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins`
+  - **Container install**: the container must mount the Docker socket (`-v /var/run/docker.sock:/var/run/docker.sock`) — inspect its run config with `docker inspect <jenkins-container>`.
+- Which one applies depends on how you installed Jenkins — both work; only the fix differs.
+
+### 4.3 Plugins (Manage Jenkins → Plugins → Available plugins)
+`Pipeline`, `Git`, `GitHub`, `Docker Pipeline`, `Blue Ocean`, `SonarQube Scanner`, `Pipeline Utility Steps`, `Credentials Binding`, `Timestamper`.
+
+### 4.4 SonarQube — one container on the same Oracle box (port 9000)
 ```bash
 docker run -d --name sonarqube -p 9000:9000 \
   -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
   -v sonarqube_data:/opt/sonarqube/data \
   sonarqube:lts-community
 ```
+Then: log in at `http://<ORACLE_PUBLIC_IP>:9000` (`admin/admin`) → **change the password** → **My Account → Security → Generate token**, name it `sonar-token`. That token becomes Jenkins credential `sonar-token` (§6), and the server is registered in Jenkins global config:
 
-Default login `admin/admin` → **change it**, create a **project token** (use "User tokens" or a "Global analysis token"). This token is what Jenkins stores and uses to push analysis.
-
----
-
-## 5. GitHub ↔ Jenkins integration
-
-- **Preferred: webhook** (needs Jenkins reachable from GitHub — use the **GitHub** plugin + a Jenkins user with read access, or set the Jenkins URL to a public/tunneled address).
-- **Fallback: SCM polling** `H/3 * * * *` — simplest, needs no inbound connection. Fine for a solo project.
-
-Branch strategy: keep the pipeline stationary on `main`; make branch pipeline job (*"Multibranch Pipeline"*) if you later want per-PR analysis. Until then a single **Pipeline** job pointing at the repo's `Jenkinsfile` is enough.
+- **Manage Jenkins → System → SonarQube servers → Add SonarQube**: Name `sonarqube`, Server URL `http://<ORACLE_PUBLIC_IP>:9000`, Server authentication token `sonar-token`.
+- **Manage Jenkins → Tools → SonarQube Scanner → Add SonarQube Scanner**: "Install automatically" is fine.
 
 ---
 
-## 6. Credentials (Jenkins → Manage Jenkins → Credentials)
+## 5. GitHub ↔ Jenkins — make GitHub talk to your Oracle Jenkins
 
-All secrets live in Jenkins **Credential Binding** (never in the repo):
+### 5.1 Tell Jenkins its own URL
+**Manage Jenkins → System → Jenkins URL** = `http://<ORACLE_PUBLIC_IP>:8080` (not localhost), so webhooks and build links resolve correctly.
 
-| Credential | Type | Used by |
+### 5.2 Webhook (preferred) — automatic trigger on push
+1. GitHub repo → **Settings → Webhooks → Add webhook**.
+2. **Payload URL:** `http://<ORACLE_PUBLIC_IP>:8080/github-webhook/` — the `/github-webhook/` path is the GitHub plugin's ingestion endpoint; keep it exact.
+3. Content type `application/json`, trigger: **Just the push event** → Add webhook.
+4. GitHub sends a **ping** immediately — a green ✓ next to the webhook means 8080 is open and the plugin is up. If it stays red, go back to §4.1.
+
+### 5.3 Polling fallback (no inbound connection needed)
+If you don't want GitHub reaching into the VM: in the job, **Build Triggers → Poll SCM** with `H/3 * * * *` — Jenkins checks GitHub every ~3 min.
+
+### 5.4 Job strategy
+A single **Pipeline** job on `main`, pointing at the repo's `Jenkinsfile` (this repo is public, so checkout needs no credentials; switch to a credentialed checkout if it ever goes private). Multibranch + per-PR analysis can come later.
+
+---
+
+## 6. Credentials (Manage Jenkins → Credentials → System → Global → Add Credentials)
+
+All secrets live in **Jenkins** (never in the repo). Create these before the first run:
+
+| Credential ID | Kind | Value |
 |---|---|---|
-| `registry-credentials` | Username/password | GHCR: username = GitHub user, password = **PAT with `write:packages` scope** |
-| `sonar-token` | Secret text | SonarQube analysis `-Dsonar.token` |
-| `staging-ssh` | SSH key | Stage 7 deploy to staging host |
-| `github-token` | Secret text | (optional) `scm` checkout auth for a private repo |
+| `registry-credentials` | Username with password | Your GitHub username + **PAT with `write:packages` scope** — used for `docker login ghcr.io` |
+| `sonar-token` | Secret text | SonarQube token from §4.4 |
+| `github-token` | Secret text | (optional) GitHub PAT — only needed if the repo goes private |
+| `staging-ssh` | SSH key | Deferred — only when the staging placeholder (§7.6) is enabled |
 
-> **GHCR note:** `docker login ghcr.io` uses your GitHub username + a **Personal Access Token** (classic, scope `write:packages`; or fine-grained with `packages:write`). No separate DockerHub account needed since the repo is already on GitHub.
+**Create the GitHub PAT first** (required before the first run): GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token**; scope **`write:packages`** (add `repo` if the repo is private). No separate DockerHub account is needed — the repo is already on GitHub, and GHCR packages ride on the same account.
 
 ---
 
@@ -158,10 +184,10 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 | `:latest` | last successful `main` build |
 
 ```bash
-docker tag voting/backend ghcr.io/<owner>/voting/backend:$GIT_COMMIT
-docker tag voting/backend ghcr.io/<owner>/voting/backend:latest
-docker push ghcr.io/<owner>/voting/backend:$GIT_COMMIT
-docker push ghcr.io/<owner>/voting/backend:latest
+docker tag voting/backend ghcr.io/sachin-dev-hub/voting/backend:$GIT_COMMIT
+docker tag voting/backend ghcr.io/sachin-dev-hub/voting/backend:latest
+docker push ghcr.io/sachin-dev-hub/voting/backend:$GIT_COMMIT
+docker push ghcr.io/sachin-dev-hub/voting/backend:latest
 # repeat for frontend, simulator
 ```
 
@@ -189,11 +215,11 @@ pipeline {
   agent any
   environment {
     IMAGES = ['backend', 'frontend', 'simulator']
-    REGISTRY = 'ghcr.io/YOUR_GITHUB_USER/voting'
+    REGISTRY = 'ghcr.io/sachin-dev-hub/voting'
     TAG = "${env.GIT_COMMIT.take(8)}"
   }
   stages {
-    stage('Checkout')     { steps { git branch: 'main', url: 'https://github.com/YOUR_GITHUB_USER/voting.git' } }
+    stage('Checkout')     { steps { git branch: 'main', url: 'https://github.com/Sachin-dev-hub/voting.git' } }
     stage('Validate')     { steps {
       dir('backend') { sh 'node --check src/server.js && node --check src/db.js && node --check src/redis.js' }
     } }
@@ -230,15 +256,22 @@ Treat this as a **starting skeleton, not the final file** — wire your real hos
 
 ---
 
-## 9. Deliverables for the implementation phase (checklist)
+## 9. Deliverables — Phase 2 checklist
 
-- [ ] Commit `backend/package-lock.json`
-- [ ] `Jenkinsfile` (declarative, this guide’s skeleton evolved)
-- [ ] `sonar-project.properties`
-- [ ] Jenkins + SonarQube running (docker containers), plugins installed
-- [ ] Credentials created: `registry-credentials`, `sonar-token`, `staging-ssh`
-- [ ] GitHub repo → Jenkins webhook (or polling fallback)
-- [ ] Job created, first run green on `main`
+Repo + box prep:
+- [x] Phase 1 POC verified; Jenkins running on Oracle Ubuntu `:8080`
+- [ ] Commit `backend/package-lock.json` (§3)
+- [ ] Commit `Jenkinsfile` (from the §8 skeleton) + `sonar-project.properties` (from §7.2)
+
+Jenkins box (Oracle Ubuntu):
+- [ ] `http://<ORACLE_PUBLIC_IP>:8080` loads; GitHub webhook ping shows green ✓ (§4.1, §5.2)
+- [ ] Jenkins user can run `docker ps` (§4.2)
+- [ ] Plugins installed (§4.3); SonarQube up on `:9000`, password changed, token created (§4.4)
+- [ ] Credentials created: `registry-credentials`, `sonar-token` (§6); GitHub PAT with `write:packages`
+
+First pipeline run:
+- [ ] Pipeline job created pointing at the repo `Jenkinsfile` (Build Triggers: webhook or poll `H/3 * * * *`)
+- [ ] First run green on `main`
 
 ## 10. Verification checklist (what "Phase 2 done" means)
 
