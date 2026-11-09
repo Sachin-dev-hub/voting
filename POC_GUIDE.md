@@ -34,6 +34,7 @@ If `docker compose` (with a space) fails, install the plugin:
 
 ```bash
 cd voting-app            # this project folder
+apt install make -y
 make build               # docker compose build
 make up                  # docker compose up -d
 make ps                  # docker compose ps  -> all 5 services should be Up (healthy)
