@@ -405,4 +405,10 @@ New configuration
 Docker Push
 
 Runs if scan passes
+-----------------------
+Before running, verify these three things
+Jenkins credentials: ID must be dockerhub, type must be Username with password, username sachinmaskar, password your Docker Hub access token.
 
+Azure agent label: Confirm the node's label is exactly trivy-agent. Your earlier logs showed azure-trivy-agent, so if that is still the actual label, change the pipeline label accordingly.
+
+Azure agent: Trivy must be installed and available through trivy --version.
