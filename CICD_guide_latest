@@ -359,4 +359,50 @@ Build/scan/push runtime:
 - [ ] `docker pull sachinmaskar/voting:backend && docker inspect` on any box returns the byte-identical image the pipeline just pushed (same sha8 → same digest)
 
 Once these pass → tell the user **Phase 2 is verified**; only then plan Phase 3 (Terraform → EKS → Helm), which replaces the push-with-no-deploy tail of this pipeline with staging/prod deploy stages.
-root@escbash-lab:~/voting# 
+
+
+
+
+
+
+
+
+
+
+jenkins is installed on oralce ubuntu
+sonarqube installed on the docker container on the same machine
+we created the sonar-token and added in the jenkins credentials
+
+we installed trivy on the azure VM
+created public and private key
+public key shared to jenkins machine to take remote
+private key is added in jenkins credentials for authentication
+
+we complted trviy installation step in trivy VM
+also we installed docker on truvy VM
+
+we added node in the jenkins for VM 
+
+where to check trivy scanned output
+1. jenkins pipeline
+2. trivy don't have build in UI, its working through API. You can view scan results in Jenkins Console Output or export them into reports.
+
+
+
+
+Docker Build
+
+Working
+Push Temporary Images
+
+Working
+Docker Hub Authentication on Azure
+
+New step
+Trivy Remote Image Scan
+
+New configuration
+Docker Push
+
+Runs if scan passes
+
