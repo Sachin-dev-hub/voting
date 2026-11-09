@@ -1,3 +1,5 @@
+git config --global user.email maskarsachin044@gmail.com
+git config --global user.name Sachin-dev-hub
 git add .
 git commit -m "added"
 git push origin main
