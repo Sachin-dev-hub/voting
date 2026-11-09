@@ -1,6 +1,6 @@
 # CI/CD Guide — Phase 2 (Jenkins + SonarQube + Trivy)
 
-> Predecessor: `POC_GUIDE.md` (Phase 1 — now verified ✅). This file is the **plan/suggestion** for Phase 2. Build it only after Phase 1 is confirmed working.
+> Predecessor: `POC_GUIDE.md` (Phase 1 — ✅ verified). This file is the **plan/suggestion** for Phase 2 — the current phase. Implementation starts now; see the deliverables checklist in §9.
 >
 > Requirement source: `requirement` + README §6.1. Stack constraints from the user: **Jenkins** (declarative pipeline), **SonarQube** (quality gate), **Trivy** (image security scan). Target registry is GitHub, so GHCR is recommended below.
 

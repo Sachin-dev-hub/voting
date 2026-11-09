@@ -5,11 +5,11 @@ Ubuntu machine before we touch CI/CD, EKS, or Terraform.**
 
 ## Order of work
 
-1. **Phase 1 (now)** — build the voting app + run it locally with Docker Compose on your Ubuntu machine. **You verify it works.**
-2. **Phase 2** — only after Phase 1 is verified: Jenkins CI/CD (build + push images) + SonarQube code scan.
+1. **Phase 1 (✅ done)** — build the voting app + run it locally with Docker Compose. **Verified on the Ubuntu machine.**
+2. **Phase 2 (current — not built yet)** — Jenkins CI/CD (build + push images) + SonarQube code scan. Plan: `CICD_guide.md`.
 3. **Phase 3** — only after Phase 2: deploy to AWS EKS with Terraform.
 
-> Nothing beyond Phase 1 is built yet. Do not go ahead of what's verified.
+> Phase 1 is complete and verified. Next up is Phase 2 (CI/CD). Do not go ahead of what's verified.
 
 ---
 
@@ -118,9 +118,9 @@ make clean   # stop AND delete the database volume (fresh start)
 
 ---
 
-## What's next after this works
+## What's next (Phase 1 is verified ✅)
 
-Phase 2 — Jenkins pipeline (Jenkinsfile) + SonarQube: lint → tests → SonarQube quality gate → build & push images → Trivy scan.
+Phase 2 — Jenkins pipeline (Jenkinsfile) + SonarQube: lint → tests → SonarQube quality gate → build & push images → Trivy scan. Full plan + suggestions: `CICD_guide.md`.
 Phase 3 — Terraform → AWS EKS: cluster + node group, then deploy this same app via Helm.
 
-(These are NOT built yet — only after you confirm Phase 1 works.)
+(Phase 2 is a plan only so far — implementation starts when you're ready. Don't touch Phase 3 until Phase 2 is verified.)

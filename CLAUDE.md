@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An end-to-end DevOps project (code → CI/CD → deployment → monitoring). The application itself is intentionally simple; the real deliverable is the delivery/observability pipeline around it.
 
 **Phase status (read first):**
-- **Phase 1 — App: code built, NOT yet verified.** Run `make build && make up && make verify` and confirm with the user before anything else. Full runbook: `POC_GUIDE.md`.
-- **Phase 2 — CI/CD (Jenkins + SonarQube + Trivy): NOT started.**
-- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): deferred by user until Phase 1 is verified.**
+- **Phase 1 — App: ✅ complete and verified** on the user's machine. `make build && make up && make verify` confirmed: all 5 services healthy, votes persist, results render. Runbook: `POC_GUIDE.md`.
+- **Phase 2 — CI/CD (Jenkins + SonarQube + Trivy): current phase, not started.** Plan + suggested pipeline (Jenkinsfile skeleton, GHCR tagging, Trivy scan, credentials): `CICD_guide.md`.
+- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): deferred by user until Phase 2 is verified.**
 - **Phase 4 — Observability (Prometheus/Grafana/Loki): not started.**
 
-Do not start work on Phase 2+ until Phase 1 is verified on the user's machine. Future-phase artifacts (`deploy/`, `monitoring/`, `Jenkinsfile`, `sonar-project.properties`) intentionally do not exist yet.
+Current work: implement the Phase 2 pipeline from `CICD_guide.md`. Future-phase artifacts (`deploy/`, `monitoring/`, `Jenkinsfile`, `sonar-project.properties`) intentionally do not exist yet.
 
 ## Common commands
 

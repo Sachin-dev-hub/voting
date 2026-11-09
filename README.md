@@ -5,14 +5,13 @@ The application itself is intentionally simple — the real deliverable is the d
 
 ## ⚡ Current Status — Session Handoff
 
-> **Workflow:** Claude sessions are 1 hour long. This section is the handoff — read it first to resume work. Latest session date: **Session 1**.
+> **Workflow:** Claude sessions are 1 hour long. This section is the handoff — read it first to resume work. Latest session date: **Session 2**.
 
-- **Phase 1 — App: ✅ CODE BUILT, ⏳ NOT YET VERIFIED**
+- **Phase 1 — App: ✅ COMPLETE AND VERIFIED** — all 5 services run, `/healthz` reports db/redis up, votes persist to Postgres, admin page shows live results.
   - Built: `backend/` (Node.js + Express — `/api/vote`, `/api/results`, `/healthz`, `/metrics`), `frontend/` (Nginx — vote page `/` + admin results `/admin.html`), `voter-simulator/` (random vote every 2s), `docker-compose.yml`, `Makefile`, `POC_GUIDE.md`.
-  - **NEXT ACTION (on my Ubuntu machine):** `make build && make up && make verify`, then open `http://localhost:8080` and `http://localhost:8080/admin.html`. Full runbook + troubleshooting: **`POC_GUIDE.md`**.
   - Note: frontend is **static HTML/JS** for now (no React build) — keeps the POC verifiable with zero build tooling. React+Vite can replace it later.
-- **Phase 2 — CI/CD: ⏳ NOT STARTED** — Jenkins (declarative `Jenkinsfile`) + SonarQube quality gate + Trivy image scan. *(Wait until Phase 1 is verified.)*
-- **Phase 3 — Deploy: ⏳ DEFERRED BY USER** — Terraform → AWS EKS + Helm chart. Explicitly paused; do NOT start until the app is verified.
+- **Phase 2 — CI/CD: 🚧 CURRENT PHASE** — Jenkins (declarative `Jenkinsfile`) + SonarQube quality gate + Trivy image scan. Plan/suggestions in **`CICD_guide.md`**; pipeline not built yet.
+- **Phase 3 — Deploy: ⏳ DEFERRED BY USER** — Terraform → AWS EKS + Helm chart. Explicitly paused; do NOT start until Phase 2 is verified.
 - **Not yet in repo:** `deploy/` (terraform/helm/k8s), `monitoring/`, `Jenkinsfile`, `sonar-project.properties` — all belong to future phases.
 
 ---
@@ -172,7 +171,7 @@ Future phases add: `make test`, `make lint`, `make deploy-staging`, `make deploy
 
 ## Roadmap
 
-1. **Phase 1 — App:** ✅ **code built** (backend, frontend, simulator, compose, Makefile) — ⏳ **pending verification** on the user's Ubuntu machine (`make build && make up && make verify`). *(Frontend is static HTML/JS for now; can swap to React+Vite later.)*
-2. **Phase 2 — CI/CD:** ⏳ **next** — Jenkins (declarative `Jenkinsfile`) pipeline building + publishing images, with **SonarQube** code quality gate.
-3. **Phase 3 — Deploy:** ⏳ deferred — Helm chart → staging/prod K8s, Terraform for infra (AWS EKS). **Explicitly paused until Phase 1 verified.**
+1. **Phase 1 — App:** ✅ **complete & verified** (backend, frontend, simulator, compose, Makefile) — all 5 services up, votes + admin results confirmed. *(Frontend stays static HTML/JS for now; can swap to React+Vite later.)*
+2. **Phase 2 — CI/CD:** 🚧 **current phase** — Jenkins (declarative `Jenkinsfile`) pipeline building + publishing images, with **SonarQube** code quality gate + **Trivy** image scan. Plan: `CICD_guide.md`.
+3. **Phase 3 — Deploy:** ⏳ deferred — Helm chart → staging/prod K8s, Terraform for infra (AWS EKS). **Explicitly paused until Phase 2 verified.**
 4. **Phase 4 — Observe:** ⏳ — Prometheus/Grafana/Loki + alerts; dashboards for every service.
