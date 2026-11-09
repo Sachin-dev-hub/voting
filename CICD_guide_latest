@@ -1,0 +1,362 @@
+# CI/CD Guide — Phase 2 (Jenkins + SonarQube + Trivy + Docker Hub)
+
+> Predecessor: `POC_GUIDE.md` (Phase 1 — ✅ verified). This file is the **walkthrough** for Phase 2.
+>
+> **Status (Phase 2 in progress):** Jenkins runs on Oracle Ubuntu at `http://localhost:8080`; **Checkout, SonarScanner check, and SonarQube analysis are working and green** on `main`. This guide now covers finishing the pipeline: **Docker build → Trivy scan (server on an Azure VM) → push to Docker Hub**. Progress checklist: §9.
+>
+> **This box has no public IP.** Jenkins, SonarQube, and the build host are all the same Oracle Ubuntu machine, reached through `localhost`. GitHub cannot reach in, so the trigger is **polling** (§5.3) — no webhook. The one outbound-but-not-inbound exception is the **Trivy server on an Azure VM**: Jenkins (client) reaches *out* to it over its public address — no inbound path to this box is required.
+>
+> Requirement source: `requirement` + README §6.1. Stack constraints from the user: **Jenkins** (declarative pipeline), **SonarQube** (quality gate), **Trivy** (image security scan, **client/server — server hosted on an Azure VM**). Container registry is **Docker Hub**, repo **`sachinmaskar/voting`**.
+
+----
+
+## 1. Goals of Phase 2
+
+1. Every commit to `main` triggers a Jenkins pipeline (within ~3 min via **Poll SCM** — §5.3; no webhook on this box).
+2. Code is statically analyzed by SonarQube; a failing **quality gate blocks** the build.
+3. Images are built, scanned with **Trivy client → server on an Azure VM** (fail on CRITICAL/HIGH), and pushed to **Docker Hub `sachinmaskar/voting`** tagged `<svc>-<sha8>` (immutable) + `<svc>` (rolling).
+4. Nothing about Phase 1 behavior changes — same images, same endpoints, now delivered by a pipeline.
+
+**Out of scope (belongs to Phase 3):** Terraform, EKS, Helm, K8s, and the staging/prod deploy stages. The pipeline ends at **push**; deploy is Phase 3.
+
+---
+
+## 2. Pipeline overview (matches the committed `Jenkinsfile`)
+
+```
+GitHub commit ──(Poll SCM ~3 min; no webhook §5.2)──▶ Jenkins (declarative Jenkinsfile, repo root)
+  Stage 1  Checkout            → git clone github.com/Sachin-dev-hub/voting (branch main)
+  Stage 2  Check SonarScanner  → verify the SonarScanner tool is installed (--version)
+  Stage 3  SonarQube Analysis  → sonar-scanner → server (projectKey=my-first-project); gate policy
+  Stage 4  Docker Build        → docker build backend, frontend, voter-simulator
+                                 tagged <svc>-<sha8> + <svc>   (e.g. backend-a1b2c3d4, backend)
+  Stage 5  Trivy Scan          → trivy client → server on Azure VM (fail on CRITICAL/HIGH)
+  Stage 6  Docker Push         → docker push sachinmaskar/voting:<svc>-<sha8> + :<svc>
+                                 (first pushes the immutable tag, then the rolling one)
+```
+
+Three services are built and pushed, each mapped to a tag suffix on the single Docker Hub repo:
+
+| Service | Build context | Rolling tag | Immutable tag |
+|---|---|---|---|
+| backend | `./backend` | `sachinmaskar/voting:backend` | `sachinmaskar/voting:backend-<sha8>` |
+| frontend | `./frontend` | `sachinmaskar/voting:frontend` | `sachinmaskar/voting:frontend-<sha8>` |
+| voter-simulator | `./voter-simulator` | `sachinmaskar/voting:voter-simulator` | `sachinmaskar/voting:voter-simulator-<sha8>` |
+
+> Docker Hub does **not** support nested repositories (`owner/voting/backend`), so services are distinguished by tag suffix on the single `sachinmaskar/voting` repo. GHCR (used in older draft notes) would allow nesting — irrelevant now.
+
+---
+
+## 3. Fix repo prerequisites first (small, do these before Jenkins)
+
+These are the honest gaps a pipeline would trip on. None require real app work.
+
+| Gap | Suggestion |
+|---|---|
+| **No `package-lock.json`** | Run `npm install` once in `backend/` and commit the lockfile. Docker builds become reproducible and `npm ci` usable. (frontend/voter-simulator have no deps — skip.) |
+
+The backend `Dockerfile` already copies `package*.json` before `src`, so the `npm install --omit=dev` layer stays cacheable — keep it that way (already the case ✅).
+
+---
+
+## 4. Your boxes
+
+### 4.1 Jenkins — Oracle Ubuntu on `:8080`
+Jenkins is **already installed, running, and passing stages 1–3** — keep the current config. **URL:** `http://localhost:8080` — browser, build links, and Jenkins↔SonarQube calls all stay on this box, so `localhost` is the correct address everywhere within it.
+
+### 4.2 Jenkins must be able to run Docker (Stages 4–6 need it)
+The pipeline builds and pushes images **on this box**, so Docker must work as the Jenkins user.
+
+- Quick check: `sudo -u jenkins docker ps` (native install), or a freestyle job with a shell step `docker ps`.
+- If permission denied:
+  - **Native install** (`.deb`/apt): `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins`
+  - **Container install**: the container must mount the Docker socket (`-v /var/run/docker.sock:/var/run/docker.sock`) — inspect with `docker inspect <jenkins-container>`.
+
+### 4.3 Plugins (Manage Jenkins → Plugins → Available plugins)
+`Pipeline`, `Git`, `GitHub`, `Docker Pipeline`, `Blue Ocean`, `SonarQube Scanner`, `Pipeline Utility Steps`, `Credentials Binding`, `Timestamper`. Trivy needs **no plugin** — it runs as a container (§7.4).
+
+### 4.4 SonarQube — one container on the same Oracle box (port 9000)
+Already running and wired (analysis is green). Reference config:
+```bash
+docker run -d --name sonarqube -p 9000:9000 \
+  -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+  -v sonarqube_data:/opt/sonarqube/data \
+  sonarqube:lts-community
+```
+- **Manage Jenkins → System → SonarQube servers → Add SonarQube**: Name **`SonarQube`** (case matters — the Jenkinsfile calls `withSonarQubeEnv('SonarQube')`), Server URL `http://localhost:9000`, token `sonar-token`.
+- **Manage Jenkins → Tools → SonarQube Scanner → Add SonarQube Scanner**: Name **`SonarScanner`** (the Jenkinsfile calls `tool 'SonarScanner'`).
+
+### 4.5 Trivy server — on your Azure VM (the one inbound service)
+Trivy runs in **client/server mode**: the server owns the vulnerability database and does the heavy lifting; the Jenkins client just ships scan requests to it. The server lives on the Azure VM (has a public IP, so Jenkins can reach it — unlike this Oracle box).
+
+**On the Azure VM** (any Linux with Docker), start the server:
+```bash
+docker run -d --name trivy-server --restart unless-stopped -p 8082:8082 \
+  aquasec/trivy:latest server --listen 0.0.0.0:8082
+```
+- Optional auth — if you add `--token <your-secret>` on the server, the client must send the same token (§6).
+- **Open TCP 8082 in the Azure NSG** for the Jenkins box's egress IP. Keep it tight — this is a DB-bearing service, don't world-expose it.
+- Verify from the Jenkins box: `curl http://<azure-vm-public-ip>:8082/health` → `Healthz True`.
+
+> No public IP is needed for anything else (§4.1). This is the one place a public address is required, and only Jenkins needs to reach out to it.
+
+---
+
+## 5. GitHub ↔ Jenkins — make GitHub talk to your Oracle Jenkins
+
+### 5.1 Tell Jenkins its own URL — `localhost` is correct here
+**Manage Jenkins → System → Jenkins URL** = `http://localhost:8080`.
+
+### 5.2 Webhook — skip unless the box gets a public IP
+> **Not usable on this box:** the webhook needs GitHub (public internet) to reach Jenkins, which requires a public IP. Yours has none — use §5.3 instead.
+
+### 5.3 Polling — the trigger to use (no inbound connection needed)
+This works with no public IP: Jenkins reaches **out** to GitHub instead of GitHub reaching in. In the job, **Build Triggers → Poll SCM** with `H/3 * * * *` — Jenkins pulls the repo state every ~3 min and builds when `main` has new commits.
+
+### 5.4 Job strategy
+A single **Pipeline** job on `main`, pointing at the repo's `Jenkinsfile` (repo is public, so checkout needs no credentials; switch to a credentialed checkout if it ever goes private).
+
+---
+
+## 6. Credentials + global env (Manage Jenkins → Credentials → System → Global)
+
+All secrets live in **Jenkins** (never in the repo). Create these before the first green run to end:
+
+| Credential ID | Kind | Value |
+|---|---|---|
+| `registry-credentials` | Username with password | **Docker Hub** username (`sachinmaskar`) + **Docker Hub access token** — used for `docker login` (§7.5) |
+| `sonar-token` | Secret text | SonarQube token from §4.4 (already created — analysis is green) |
+| `trivy-token` | Secret text | (optional) Trivy server token — **only if** the server started with `--token` (§4.5) |
+
+The Jenkinsfile reads two **Environment variables** (no secrets here — set under **Manage Jenkins → System → Global properties → Environment variables**):
+
+| Variable | Value | Required? |
+|---|---|---|
+| `TRIVY_SERVER_URL` | `http://<azure-vm-public-ip>:8082` | ✅ required |
+| `TRIVY_TOKEN` | the server token, if any | only if the server has one |
+
+**Create the Docker Hub access token first** (required before Stage 4/5/6 run): Docker Hub → **Account Settings → Security → New Access Token** (name e.g. `jenkins-ci`) → use the token as the **password** in `registry-credentials` (username `sachinmaskar`). A plain account password works too, but an access token lets you scope it and revoke it independently.
+
+---
+
+## 7. Stage-by-stage (matches the committed `Jenkinsfile`)
+
+### 7.1 Checkout & Check SonarScanner
+- Checkout `main` with the **Git** plugin (`git branch/url` step — §2).
+- `Check SonarScanner` prints the tool's install path and version (`tool 'SonarScanner'` + `sonar-scanner --version`) — a fast sanity check that the global tool config from §4.4 resolves.
+
+### 7.2 SonarQube analysis + quality gate
+As wired in the committed `Jenkinsfile`, the key is passed explicitly so it cannot drift:
+```groovy
+stage('SonarQube Analysis') {
+  steps {
+    script {
+      def scannerHome = tool 'SonarScanner'
+      withSonarQubeEnv('SonarQube') {
+        sh """
+          ${scannerHome}/bin/sonar-scanner \
+          -Dsonar.projectKey=my-first-project \
+          -Dsonar.projectName=my-first-project \
+          -Dsonar.sources=.
+        """
+      }
+    }
+  }
+}
+```
+- The **`-D` flags override** anything in a repo-root `sonar-project.properties`, so where both exist the Jenkinsfile wins. (`sonar-project.properties` + `sonar_test.py` were standalone practice artifacts used to get scanning working; the pipeline pins its own key.)
+- Add `waitForQualityGate` (gate fails → build fails) once you have real coverage to measure; for now the analysis step posting successfully is the Phase 2 bar.
+
+### 7.3 Docker build (cache-friendly)
+- One image per service, tagged **twice in a single `docker build`** — immutable + rolling (single Docker Hub repo, services as tag suffixes):
+```bash
+docker build -t sachinmaskar/voting:backend-<sha8> -t sachinmaskar/voting:backend ./backend
+docker build -t sachinmaskar/voting:frontend-<sha8> -t sachinmaskar/voting:frontend ./frontend
+docker build -t sachinmaskar/voting:voter-simulator-<sha8> -t sachinmaskar/voting:voter-simulator ./voter-simulator
+```
+- `<sha8>` = first 8 chars of `GIT_COMMIT`, computed **inside the Docker Build stage** (`env.IMAGE_TAG = (env.GIT_COMMIT ?: 'latest').take(8)`). It is *not* set in the global `environment` block — that block is evaluated before checkout, when `GIT_COMMIT` isn't populated yet.
+- Backend `npm install --omit=dev` layer stays cacheable (Dockerfile copies `package*.json` before `src` ✅).
+
+### 7.4 Trivy scan — client/server against the Azure VM (fail on CRITICAL/HIGH)
+The **client** runs as a container on the Jenkins box (nothing installed); the **server** does the scanning on the Azure VM (§4.5). The client streams the built image straight from the local Docker daemon (socket mount). Actual step (loops over the three services):
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  aquasec/trivy:latest \
+  client --remote ${TRIVY_SERVER_URL} \
+  image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
+  sachinmaskar/voting:backend-<sha8>
+```
+- `--remote http://<azure-vm-ip>:8082` (from `TRIVY_SERVER_URL`) tells the client which server holds the DB.
+- `--token <token>` / `TRIVY_TOKEN` env is sent automatically when set (§6).
+- **`--exit-code 1` means any CRITICAL/HIGH fails the build → a bad image never gets pushed.** `--ignore-unfixed` avoids tripping on unpatched-but-unfixable upstream CVEs — keep it on.
+- Scan **everything built** — the Jenkinsfile loops over backend/frontend/voter-simulator.
+- Server-side DB is cached on the Azure VM, so scans are fast and the DB update happens once (server-side), not per build.
+- Later (Phase 3+): `trivy config .` for IaC/docker-compose scanning too.
+
+### 7.5 Push to Docker Hub (tagging scheme)
+
+| Tag | Meaning |
+|---|---|
+| `:<svc>-<sha8>` | unique, immutable, deployable |
+| `:<svc>` | rolling = last successful `main` build |
+
+```bash
+echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin   # registry-credentials
+docker push sachinmaskar/voting:backend-<sha8>
+docker push sachinmaskar/voting:backend        # (rolling, pushed after the immutable tag)
+# repeat for frontend, voter-simulator
+```
+- The pipeline's `GIT_COMMIT.take(8)` keeps tags reproducible — same build, same tag.
+- Wait for the **immutable** tag to be pushed first, then the rolling one: any crash mid-push leaves `:latest`-style tags pointing at whatever made it, and the immutable tag is the safe deploy target.
+
+> Phase 3 replaces the "deploy" story. There is **no deploy stage in this pipeline** — it ends, intentionally, after push. Staging/prod deploys (SSH + compose, then Helm → EKS) are Phase 3.
+
+---
+
+## 8. Jenkinsfile (this is the committed file — `voting/Jenkinsfile`)
+
+```groovy
+// Docker Hub repo (single repo — services are distinguished by tag suffix)
+def SERVICES = ['backend', 'frontend', 'voter-simulator']
+
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY       = 'sachinmaskar/voting'     // Docker Hub repository
+        TRIVY_SEVERITY = 'CRITICAL,HIGH'
+        // NOTE: IMAGE_TAG is NOT set here. The global environment block is
+        // evaluated before stages run, when GIT_COMMIT is not yet populated.
+        // It is computed in the Docker Build stage (after checkout) → env.IMAGE_TAG.
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Checking out GitHub repository'
+
+                git branch: 'main',
+                    url: 'https://github.com/Sachin-dev-hub/voting.git'
+            }
+        }
+
+        stage('Check SonarScanner') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    echo "SonarScanner location: ${scannerHome}"
+
+                    sh "${scannerHome}/bin/sonar-scanner --version"
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=my-first-project \
+                            -Dsonar.projectName=my-first-project \
+                            -Dsonar.sources=.
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    // Set the immutable tag once, after checkout (GIT_COMMIT exists here).
+                    env.IMAGE_TAG = (env.GIT_COMMIT ?: 'latest').take(8)
+
+                    SERVICES.each { svc ->
+                        sh "docker build -t ${env.REGISTRY}:${svc}-${env.IMAGE_TAG} -t ${env.REGISTRY}:${svc} ./${svc}"
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    // Trivy client/server: the server (vuln DB) runs on a separate
+                    // Azure VM. TRIVY_SERVER_URL and TRIVY_TOKEN are set once under
+                    // Jenkins → Manage Jenkins → System → Global properties.
+                    def trivyServer = env.TRIVY_SERVER_URL ?: ''
+                    if (!trivyServer) {
+                        error "TRIVY_SERVER_URL is not set. Add it to Global properties, e.g. http://<azure-vm-public-ip>:8082"
+                    }
+                    def tokenFlag = env.TRIVY_TOKEN ? "--token ${env.TRIVY_TOKEN}" : ''
+
+                    SERVICES.each { svc ->
+                        sh """
+                            docker run --rm \
+                              -v /var/run/docker.sock:/var/run/docker.sock \
+                              aquasec/trivy:latest \
+                              client --remote ${trivyServer} ${tokenFlag} \
+                              image --severity ${env.TRIVY_SEVERITY} --ignore-unfixed --exit-code 1 \
+                              ${env.REGISTRY}:${svc}-${env.IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'registry-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
+                    script {
+                        SERVICES.each { svc ->
+                            sh "docker push ${env.REGISTRY}:${svc}-${env.IMAGE_TAG}"
+                            sh "docker push ${env.REGISTRY}:${svc}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+The file is a **working pipeline**, not a skeleton — stages 1–3 are proven green; stages 4–6 are ready to run once §4.5/§6 are in place.
+
+---
+
+## 9. Deliverables — Phase 2 checklist
+
+Repo + box prep:
+- [x] Phase 1 POC verified; Jenkins running on Oracle Ubuntu `:8080`
+- [x] `Jenkinsfile` committed (Checkout → SonarScanner → SonarQube → Docker Build → Trivy Scan → Docker Push)
+- [x] SonarQube analysis **green** on `main` (Practice files `sonar-project.properties`/`sonar_test.py` kept separately)
+- [ ] Commit `backend/package-lock.json` (§3)
+
+Build/scan/push runtime:
+- [ ] Docker works for the Jenkins user (§4.2)
+- [ ] **Trivy server up on the Azure VM**, `:8082`, NSG opened to Jenkins (§4.5); `curl /health` → Healthy
+- [ ] Global env `TRIVY_SERVER_URL` set (§6); `trivy-token` added only if the server uses one
+- [ ] `registry-credentials` = Docker Hub username + **access token** (§6); Docker Hub access token created
+- [ ] First run green end-to-end: images built, scanned (no CRITICAL/HIGH), pushed to `sachinmaskar/voting`
+
+## 10. Verification checklist (what "Phase 2 done" means)
+
+- [ ] Commit to `main` → pipeline runs automatically (Poll SCM, within ~3 min)
+- [ ] SonarQube analysis posts to the server; a deliberately bad change is caught
+- [ ] Trivy stage contacts the **Azure VM server** — logs show the scan running server-side; no CRITICAL/HIGH (or a real finding blocked the push)
+- [ ] Tagged images exist on Docker Hub: `sachinmaskar/voting:<svc>-<sha8>` + `:<svc>` for all 3 services
+- [ ] `docker pull sachinmaskar/voting:backend && docker inspect` on any box returns the byte-identical image the pipeline just pushed (same sha8 → same digest)
+
+Once these pass → tell the user **Phase 2 is verified**; only then plan Phase 3 (Terraform → EKS → Helm), which replaces the push-with-no-deploy tail of this pipeline with staging/prod deploy stages.
+root@escbash-lab:~/voting# 
