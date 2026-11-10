@@ -12,7 +12,7 @@
 
 1. [Prerequisites & tools (on "your box")](#1-prerequisites--tools)
 2. [AWS account prep + budget guardrail](#2-aws-account-prep)
-3. [Create the Terraform state backend (S3 + DynamoDB)](#3-terraform-state-backend)
+3. [Create the Terraform state backend (S3, native locking — no DynamoDB)](#3-terraform-state-backend)
 4. [Scaffold the Terraform project](#4-scaffold-the-terraform-project)
 5. [Module: VPC](#5-module-vpc)
 6. [Module: EKS (control plane + node group)](#6-module-eks)
@@ -35,35 +35,62 @@
 
 ## 1. Prerequisites & tools
 
-Do this on your **AWS workstation** — can be the same Oracle Ubuntu box or anywhere you installed these (this box has no public IP, which is fine — everything here is outbound-to-AWS).
+You run everything below from **Git Bash on Windows** (MINGW64). The tools you install are the **Windows** executables; once their folders are on the Windows `PATH`, they work normally inside Git Bash. Everything here is outbound-to-AWS on the public internet, so no firewall/NSG changes are needed on your machine.
 
-### 1.1 Install / verify
+**Git Bash quirks to know up front** (so commands in this guide run unchanged):
+- There is **no `sudo`** in Git Bash — the install steps below are user-space (no admin needed if you install into your own `~/bin` or rely on a package manager that adds to PATH).
+- `open` (macOS) does **not** exist — to open the ALB URL in a browser use `explorer.exe "http://..."` or `start http://...` (§14).
+- `grep`, `sort`, `tail`, `curl`, `mkdir -p`, `printf`, `$( )` and heredocs **all work** in Git Bash exactly as written below. `wget` may be absent and the steps rely on built-in `tar`/`curl` — the manual-install block below also shows how to expand a `.zip` without `unzip`.
+- After installing any tool, **close and reopen Git Bash** so the new PATH takes effect, then verify with the version checks.
+
+### 1.1 Install / verify (Windows + Git Bash)
+First check what you already have (Git Bash can run Windows `.exe`s if they're on PATH):
 ```bash
-terraform version        # need >= 1.5
+terraform version        # need >= 1.10  (1.10+ required for S3 native locking, §3)
 kubectl version --client # need >= 1.28 (CLI should be >= cluster minor -1)
 helm version --short
 aws --version            # AWS CLI v2
+eksctl version           # (used for nodegroup/addon upgrades in §16, §18)
 ```
 
-Install anything missing for the target OS (examples — Ubuntu):
+Best path on Windows — install with **Chocolatey** (runs in an admin PowerShell/terminal once; after each `choco install`, reopen Git Bash):
+```powershell
+choco install terraform        # >= 1.10
+choco install kubernetes-cli   # kubectl
+choco install kubernetes-helm  # helm
+choco install awscli           # AWS CLI v2
+choco install eksctl           # EKS nodegroup/addon upgrades (§16, §18)
+```
+
+No admin / no Chocolatey? Manual installs that all land in your own `~/bin` (no `sudo` needed):
 ```bash
-# Terraform
-sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
-wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt-get update && sudo apt-get install -y terraform
+# make a personal bin dir and add it to PATH for the session + futures
+mkdir -p ~/bin
+echo 'export PATH="$HOME/bin:${PATH%/}:$PATH"' >> ~/.bashrc    # Git Bash reads ~/.bashrc
+source  ~/.bashrc
 
-# kubectl (pin to a recent stable; example)
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+# Terraform (replace 1.10.5 with the newest stable from https://github.com/hashicorp/terraform/releases)
+curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_windows_amd64.zip"
+tar -xf terraform.zip -C ~/bin ; rm terraform.zip     # Git Bash's tar (bsdtar) extracts .zip fine
 
-# Helm
-curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-chmod 700 get_helm.sh && ./get_helm.sh
+# kubectl (latest stable client for Windows)
+curl -fsSL -o ~/bin/kubectl.exe "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/windows/amd64/kubectl.exe"
 
-# AWS CLI v2
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip && sudo ./aws/install
+# Helm (Windows-amd64 zip from the latest GitHub release)
+#   https://github.com/helm/helm/releases/latest  → helm-vX.Y.Z-windows-amd64.zip
+#   tar -xf helm-vX.Y.Z-windows-amd64.zip -C ~/bin    (place helm.exe into ~/bin)
+
+# AWS CLI v2 (Windows installer — runs a GUI wizard, no admin needed for your user)
+#   https://aws.amazon.com/cli/  → "Download for Windows"
+#   OR if winget is available:  winget install Amazon.AWSCLI
+
+# eksctl (Windows exe): https://github.com/weaveworks/eksctl/releases/latest → eksctl_windows_amd64.zip,
+#   tar -xf eksctl_windows_amd64.zip -C ~/bin          (place eksctl.exe into ~/bin)
+```
+
+Then verify from Git Bash (reopened, so PATH is fresh):
+```bash
+terraform version; kubectl version --client; helm version --short; aws --version; eksctl version
 ```
 
 ### 1.2 AWS credentials (never commit these)
@@ -71,7 +98,7 @@ unzip awscliv2.zip && sudo ./aws/install
 aws configure            # access key / secret / region (us-east-1) / output json
 aws sts get-caller-identity   # shows the account you're about to bill
 ```
-Also configure terraform's AWS auth (it reads `~/.aws/credentials`, env vars, or `AWS_PROFILE` — pick one and keep it consistent).
+Credentials are written to `~/.aws/credentials` (same file Windows accounts use). Terraform inherits this automatically (it reads the shared credentials file, env vars, or `AWS_PROFILE` — keep one source consistent).
 
 ### 1.3 Choose the Kubernetes version — always pin the latest currently supported
 Do **not** hard-code a stale version. Check what's currently offered:
@@ -109,7 +136,7 @@ aws budgets create-budget \
 
 ## 3. Terraform state backend
 
-Terraform state goes to **S3** (versioned + encrypted) and **DynamoDB** holds the lock. State is created out-of-band once (small script, fine to run by hand):
+Terraform state goes to **S3** (versioned + encrypted). Locking uses **S3's native object locking** via the backend's `use_lockfile = true` option — **no DynamoDB table is needed**. (Terraform ≥ 1.10 implements lock-free-file locking by writing a `.tflock` object in S3 and using conditional writes.) The bucket is created out-of-band once (small script, fine to run by hand):
 
 ```bash
 BUCKET=voting-tfstate-$(aws sts get-caller-identity --query Account --output text)   # account-unique suffix
@@ -123,16 +150,10 @@ aws s3api put-bucket-encryption --bucket $BUCKET \
 aws s3api put-public-access-block --bucket $BUCKET \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
-aws dynamodb create-table \
-  --table-name voting-tfstate-lock \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST --region $REGION
-
 echo "S3 bucket: $BUCKET"
 ```
 
-> State is remote **from step one** — nothing stays on disk. Note the bucket name; it goes in `backend.tf` (§8.1). These two resources intentionally **survive** `terraform destroy` — they're your state home.
+> State is remote **from step one** — nothing stays on disk. Note the bucket name; it goes in `backend.tf` (§8.1). The bucket intentionally **survives** `terraform destroy` — it's your state home. Because locking is done by S3 itself, there is **no DynamoDB table to create or bill**. Versioning gives you state history/rollback; the `use_lockfile` option (set in §8.1) gives you the lock — you need **Terraform ≥ 1.10** for it (bump the `required_version` in §8.2 accordingly; the guide uses `>= 1.10`).
 
 ---
 
@@ -394,11 +415,11 @@ terraform {
 ```hcl
 terraform {
   backend "s3" {
-    bucket         = "voting-tfstate-<ACCOUNT_ID>"   # from §3
-    key            = "dev/eks/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "voting-tfstate-lock"
-    encrypt        = true
+    bucket       = "voting-tfstate-<ACCOUNT_ID>"   # from §3
+    key          = "dev/eks/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true    # S3-native locking — no DynamoDB table (Terraform >= 1.10)
   }
 }
 ```
@@ -406,7 +427,7 @@ terraform {
 ### 8.2 `providers.tf`
 ```hcl
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.10"   # 1.10+ needed for S3 native locking (use_lockfile)
   required_providers {
     aws        = { source = "hashicorp/aws",       version = "~> 5.60" }
     http       = { source = "hashicorp/http",      version = "~> 3.4" }
@@ -913,8 +934,8 @@ curl -s  http://$ALB/healthz             # ok (proxied path)
 curl -s  http://$ALB/api/results         # {"lion":N,"tiger":N,...}
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"lion"}' | head -1   # 201
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"moose"}' | head -1  # 400
-open http://$ALB/                        # vote page (or curl -sI for status 200)
-open http://$ALB/admin.html              # admin chart
+cmd //c start "" "http://$ALB/"       # open the vote page in your default browser (Git Bash)
+cmd //c start "" "http://$ALB/admin.html"    # admin results chart
 ```
 Alternatives if a browser is not available: `curl -s http://$ALB/ | head`, then the vote page HTML is the same Phase-1 static page.
 
@@ -1013,7 +1034,7 @@ terraform destroy -auto-approve
 ```
 Expect the ALB to go away before/with nodes; give the LB another minute if destroy reports lingering dependencies — re-run destroy. Postgres PVC and data are removed with the cluster by design; pull the pod dump first if you want to keep data.
 
-**Left by design (keep):** the S3 state bucket + versioning, and the DynamoDB lock table (§3) — they cost ~nothing and are your state home. Everything else should be gone: check EC2 → Load Balancers/Target groups, EBS volumes, NAT gateway, EKS clusters are all deleted. Re-run `aws budgets describe-budgets` to see spend history.
+**Left by design (keep):** the S3 state bucket + versioning (§3) — it costs ~nothing and is your state home (no DynamoDB table exists to clean up — locking is native to S3). Everything else should be gone: check EC2 → Load Balancers/Target groups, EBS volumes, NAT gateway, EKS clusters are all deleted. Re-run `aws budgets describe-budgets` to see spend history.
 
 ---
 
@@ -1028,8 +1049,8 @@ Expect the ALB to go away before/with nodes; give the LB another minute if destr
 | Ingress created but no ADDRESS | LB controller not deployed / IRSA role wrong → `kubectl get pods -n kube-system | grep controller`, `kubectl logs -n kube-system deploy/aws-load-balancer-controller`; verify OIDC provider & `aws_iam_policy` name |
 | ALB says `target unhealthy` | healthcheck path wrong / NodePort not matching ingress target → verify `alb.ingress.kubernetes.io/healthcheck-path: /` + frontend svc NodePort 30080; curl node IP:30080 from a worker |
 | `terraform destroy` hangs on ALB | LB takes ~1 min to deregister; re-run destroy once |
-| `terraform` says S3 lock held | another apply in-flight, or a stale lock → `terraform force-unlock <id>` (from the error) only after confirming nothing else runs |
-| Access denied to S3 backend | IAM user missing `s3:*` on the state bucket / `dynamodb:*` on the lock table — add the two minimal policies |
+| `terraform` says S3 lock held | another `apply` in-flight, or a stale `.tflock` object → `terraform force-unlock <id>` (from the error) only after confirming nothing else runs; with `use_lockfile`, delete the lock object in S3 only if it is provably stale |
+| Access denied to S3 backend | IAM user missing `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` on `voting-tfstate-*/dev/eks/*` and the bucket-level perm — add the minimal S3 policy (only S3; no DynamoDB is used) |
 
 ---
 

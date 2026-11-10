@@ -11,7 +11,7 @@
 
 Deploy the voting application from Phase 1/2 onto a production-shaped **AWS EKS** cluster, with:
 - **1 master + 2 worker nodes** (see §3 — on EKS the "master" is a fully AWS-managed control plane).
-- Infrastructure defined 100% in **Terraform** using **modules** and a **remote S3 backend with DynamoDB state locking**.
+- Infrastructure defined 100% in **Terraform** using **modules** and a **remote S3 backend with native S3 state locking** (`use_lockfile` — **no DynamoDB**).
 - A documented **EKS upgrade** path (control plane + managed node group, one minor version at a time).
 - **Ingress** + **Load Balancer** so the app is reachable over the internet at a stable DNS name.
 - Redeployment of the **same Docker Hub images the Phase 2 Jenkins pipeline pushes** (`sachinmaskar/voting:<svc>`), deployed via **Helm**.
@@ -102,14 +102,14 @@ If you ever truly need your own visible master node (SSH to it, run etcd yoursel
 
 ## 6. Terraform requirements (the "concepts" the user asked for)
 
-1. **Remote backend:** Terraform state in **S3** (versioned, encrypted) + **DynamoDB table for state locking**. No state on local disk. Multi-env state keys (`dev/eks/...`).
+1. **Remote backend:** Terraform state in **S3** (versioned, encrypted) with **native S3 state locking** — backend option `use_lockfile = true` (Terraform ≥ 1.10 wraps the lock in an S3 `.tflock` object via conditional writes; **no DynamoDB table is created or billed**). No state on local disk. Multi-env state keys (`dev/eks/...`).
 2. **Modules:** infra split into reusable modules. Use the **official community modules** (`terraform-aws-modules/vpc/aws`, `terraform-aws-modules/eks/aws`) for the heavy lifting **plus at least one hand-written module** (the AWS Load Balancer Controller + IRSA) so the module-reuse / module-authoring pattern is demonstrated end to end.
 3. **Project shape (proposed):**
    ```
    deploy/terraform/
    ├── environments/
    │   └── dev/
-   │       ├── backend.tf    # S3 + DynamoDB
+   │       ├── backend.tf    # S3 backend + native S3 locking (use_lockfile)
    │       ├── providers.tf  # aws, kubernetes, helm
    │       ├── main.tf       # module wiring (root module)
    │       ├── variables.tf
@@ -189,14 +189,14 @@ Guardrails required:
 1. AWS account + billing is the user's own; this is their first EKS build (guide assumes blank-canvas, `us-east-1`).
 2. Worker count **= 2** (user-specified). Node size/type honored from §3 unless the user overrides — supply in `terraform.tfvars`.
 3. Region, instance type, on-demand-vs-spot, and cluster name are **user decisions with recommended defaults** (§3). Confirm before running long, but nothing here blocks starting.
-4. App deployed with **Helm** (per README Phase 3); infra with **Terraform**. State on S3+DynamoDB.
+4. App deployed with **Helm** (per README Phase 3); infra with **Terraform**. State on S3 with native object locking (`use_lockfile = true`, no DynamoDB).
 5. The user follows instructions **only from `EKS_guide.md`** (this session instructed "step-by-step instructions in that file only, do not edit other files").
 
 ---
 
 ## 13. Acceptance criteria — what "Phase 3 done" means (mirrors `EKS_guide.md` §20)
 
-- [ ] `terraform apply` built VPC + EKS control plane + **2 worker nodes** from remote S3 state with DynamoDB locking (`terraform apply` ≥ 2nd run shows no state drift).
+- [ ] `terraform apply` built VPC + EKS control plane + **2 worker nodes** from remote S3 state with **native S3 locking** (`use_lockfile`; a second concurrent `apply` is correctly blocked) — `terraform apply` ≥ 2nd run shows no state drift.
 - [ ] `kubectl get nodes` → 2 × `Ready`, K8s version = chosen version.
 - [ ] Addons correct: `vpc-cni`, `kube-proxy`, `coredns`, `aws-ebs-csi-driver` showing `ACTIVE`.
 - [ ] AWS Load Balancer Controller deployed; an `Ingress` created an internet-facing **ALB** with a working DNS.
@@ -204,7 +204,7 @@ Guardrails required:
 - [ ] End-to-end via ALB DNS: `/` loads vote page, `/admin.html` shows live chart, POST `/api/vote` → 201, `/healthz` → 200.
 - [ ] Postgres data survives a pod delete + node restart (PVC proof).
 - [ ] **EKS upgrade procedure written and (optionally) demonstrated** one minor version with no data loss.
-- [ ] `terraform destroy` tears everything down (or a written cost/cleanup plan) with nothing left in the AWS account beyond state bucket/DynamoDB (kept by design).
+- [ ] `terraform destroy` tears everything down (or a written cost/cleanup plan) with nothing left in the AWS account beyond the state bucket (kept by design — no DynamoDB table exists).
 
 ---
 

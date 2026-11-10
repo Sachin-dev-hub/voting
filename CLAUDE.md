@@ -8,11 +8,11 @@ An end-to-end DevOps project (code → CI/CD → deployment → monitoring). The
 
 **Phase status (read first):**
 - **Phase 1 — App: ✅ complete and verified** on the user's machine. `make build && make up && make verify` confirmed: all 5 services healthy, votes persist, results render. Runbook: `POC_GUIDE.md`.
-- **Phase 2 — CI/CD (Jenkins + SonarQube + Trivy): current phase, not started.** Plan + suggested pipeline (Jenkinsfile skeleton, GHCR tagging, Trivy scan, credentials): `CICD_guide.md`.
-- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): deferred by user until Phase 2 is verified.**
-- **Phase 4 — Observability (Prometheus/Grafana/Loki): not started.**
+- **Phase 2 — CI/CD (Jenkins + SonarQube + Trivy): ✅ complete (user-verified).** Committed `Jenkinsfile` runs Checkout → SonarScanner → SonarQube analysis (green on `main`) → Docker build → Trivy scan (client/server, server on Azure VM) → push to **Docker Hub `sachinmaskar/voting`** (`:<svc>-<sha8>` immutable + `:<svc>` rolling). Pipeline ends at push — there is intentionally no deploy stage yet. Runbook (with open checklist items like committing `backend/package-lock.json`): `CICD_guide_latest`.
+- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): current phase — plan ready, provisioning not started.** Requirements gathered in `EKS_requirement.md`; step-by-step runbook (Terraform backend/modules → EKS → ALB ingress → Helm → upgrade) in `EKS_guide.md`. No cloud resources exist yet.
+- **Phase 4 — Observability (Prometheus/Grafana/Loki): not started.** Deferred until Phase 3 is verified.
 
-Current work: implement the Phase 2 pipeline from `CICD_guide.md`. Future-phase artifacts (`deploy/`, `monitoring/`, `Jenkinsfile`, `sonar-project.properties`) intentionally do not exist yet.
+Current work: execute Phase 3 from `EKS_guide.md` (provision EKS cluster with Terraform, deploy the Phase 2 images via Helm behind an ALB ingress). `deploy/` and `monitoring/` do not exist yet — they are created step-by-step by the guide.
 
 ## Common commands
 
