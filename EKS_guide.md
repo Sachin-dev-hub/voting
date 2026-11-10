@@ -35,60 +35,59 @@
 
 ## 1. Prerequisites & tools
 
-You run everything below from **Git Bash on Windows** (MINGW64). The tools you install are the **Windows** executables; once their folders are on the Windows `PATH`, they work normally inside Git Bash. Everything here is outbound-to-AWS on the public internet, so no firewall/NSG changes are needed on your machine.
+Run everything below from your **Ubuntu machine in Oracle VirtualBox**. This is the production-realistic choice: production Terraform/kubectl/helm work happens on **Linux** (CI runners, Jenkins agents, GitOps runners) — not from a Windows shell (which was the old draft's approach and isn't a pattern you'd see in a real project). Everything here is **outbound to AWS** on the public internet, so no inbound firewall / VirtualBox port-forwarding / cloud-NSG changes are needed.
 
-**Git Bash quirks to know up front** (so commands in this guide run unchanged):
-- There is **no `sudo`** in Git Bash — the install steps below are user-space (no admin needed if you install into your own `~/bin` or rely on a package manager that adds to PATH).
-- `open` (macOS) does **not** exist — to open the ALB URL in a browser use `explorer.exe "http://..."` or `start http://...` (§14).
-- `grep`, `sort`, `tail`, `curl`, `mkdir -p`, `printf`, `$( )` and heredocs **all work** in Git Bash exactly as written below. `wget` may be absent and the steps rely on built-in `tar`/`curl` — the manual-install block below also shows how to expand a `.zip` without `unzip`.
-- After installing any tool, **close and reopen Git Bash** so the new PATH takes effect, then verify with the version checks.
+**VirtualBox networking note:** the VM's default **NAT** adapter gives outbound internet but no public inbound IP — which is all this project needs (like the Phase 2 Jenkins box). If `apt update` or `curl` ever times out, the first things to check are the VM network adapter (attached to NAT) and host internet. Clipboard sharing helps for copying the `kubectl get ingress` ALB hostname into a browser.
 
-### 1.1 Install / verify (Windows + Git Bash)
-First check what you already have (Git Bash can run Windows `.exe`s if they're on PATH):
+### 1.1 Install / verify (Ubuntu)
 ```bash
+sudo apt-get update
 terraform version        # need >= 1.10  (1.10+ required for S3 native locking, §3)
 kubectl version --client # need >= 1.28 (CLI should be >= cluster minor -1)
 helm version --short
 aws --version            # AWS CLI v2
-eksctl version           # (used for nodegroup/addon upgrades in §16, §18)
+eksctl version           # (used for nodegroup/addon upgrades in §16, §18) — optional, but needed there
 ```
 
-Best path on Windows — install with **Chocolatey** (runs in an admin PowerShell/terminal once; after each `choco install`, reopen Git Bash):
-```powershell
-choco install terraform        # >= 1.10
-choco install kubernetes-cli   # kubectl
-choco install kubernetes-helm  # helm
-choco install awscli           # AWS CLI v2
-choco install eksctl           # EKS nodegroup/addon upgrades (§16, §18)
-```
-
-No admin / no Chocolatey? Manual installs that all land in your own `~/bin` (no `sudo` needed):
+**Terraform** (HashiCorp apt repo — stays current via `apt upgrade`):
 ```bash
-# make a personal bin dir and add it to PATH for the session + futures
-mkdir -p ~/bin
-echo 'export PATH="$HOME/bin:${PATH%/}:$PATH"' >> ~/.bashrc    # Git Bash reads ~/.bashrc
-source  ~/.bashrc
-
-# Terraform (replace 1.10.5 with the newest stable from https://github.com/hashicorp/terraform/releases)
-curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_windows_amd64.zip"
-tar -xf terraform.zip -C ~/bin ; rm terraform.zip     # Git Bash's tar (bsdtar) extracts .zip fine
-
-# kubectl (latest stable client for Windows)
-curl -fsSL -o ~/bin/kubectl.exe "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/windows/amd64/kubectl.exe"
-
-# Helm (Windows-amd64 zip from the latest GitHub release)
-#   https://github.com/helm/helm/releases/latest  → helm-vX.Y.Z-windows-amd64.zip
-#   tar -xf helm-vX.Y.Z-windows-amd64.zip -C ~/bin    (place helm.exe into ~/bin)
-
-# AWS CLI v2 (Windows installer — runs a GUI wizard, no admin needed for your user)
-#   https://aws.amazon.com/cli/  → "Download for Windows"
-#   OR if winget is available:  winget install Amazon.AWSCLI
-
-# eksctl (Windows exe): https://github.com/weaveworks/eksctl/releases/latest → eksctl_windows_amd64.zip,
-#   tar -xf eksctl_windows_amd64.zip -C ~/bin          (place eksctl.exe into ~/bin)
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common wget
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update && sudo apt-get install -y terraform
 ```
 
-Then verify from Git Bash (reopened, so PATH is fresh):
+**kubectl** (official Kubernetes apt repo — keep the minor matched to §1.3):
+```bash
+sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update && sudo apt-get install -y kubectl
+# (set "v1.31" to the cluster's minor-version you pick in §1.3; the CLI should be >= cluster minor -1, prefer equal)
+```
+Kubernetes publishes a `stable:/v1.31/deb/` repo per supported minor — if you choose another version in §1.3, swap `v1.31` for that minor.
+
+**Helm** (official installer — needs curl):
+```bash
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh && ./get_helm.sh
+# or, if you prefer a package:  sudo snap install helm --classic
+```
+
+**AWS CLI v2** (bundled installer — the distro `apt awscli` is v1, avoid it):
+```bash
+sudo apt-get install -y unzip    # needed to unpack the installer
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip && sudo ./aws/install && rm -rf awscliv2.zip aws
+```
+
+**eksctl** (official binary — needed only for the nodegroup/addon upgrade & scale steps in §16/§18):
+```bash
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
+```
+
+Verify all from a **new terminal** (new PATH):
 ```bash
 terraform version; kubectl version --client; helm version --short; aws --version; eksctl version
 ```
@@ -98,7 +97,7 @@ terraform version; kubectl version --client; helm version --short; aws --version
 aws configure            # access key / secret / region (us-east-1) / output json
 aws sts get-caller-identity   # shows the account you're about to bill
 ```
-Credentials are written to `~/.aws/credentials` (same file Windows accounts use). Terraform inherits this automatically (it reads the shared credentials file, env vars, or `AWS_PROFILE` — keep one source consistent).
+Credentials are written to `~/.aws/credentials`. Terraform inherits this automatically (it reads the shared credentials file, env vars, or `AWS_PROFILE` — keep exactly one source consistent).
 
 ### 1.3 Choose the Kubernetes version — always pin the latest currently supported
 Do **not** hard-code a stale version. Check what's currently offered:
@@ -934,8 +933,9 @@ curl -s  http://$ALB/healthz             # ok (proxied path)
 curl -s  http://$ALB/api/results         # {"lion":N,"tiger":N,...}
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"lion"}' | head -1   # 201
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"moose"}' | head -1  # 400
-cmd //c start "" "http://$ALB/"       # open the vote page in your default browser (Git Bash)
-cmd //c start "" "http://$ALB/admin.html"    # admin results chart
+xdg-open "http://$ALB/"       # open the vote page in the VM's default browser (Ubuntu)
+xdg-open "http://$ALB/admin.html"    # admin results chart
+# (ALB is public internet-facing — you can also open these in ANY browser on the host)
 ```
 Alternatives if a browser is not available: `curl -s http://$ALB/ | head`, then the vote page HTML is the same Phase-1 static page.
 
