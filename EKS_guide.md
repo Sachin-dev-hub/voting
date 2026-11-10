@@ -35,11 +35,18 @@
 
 ## 1. Prerequisites & tools
 
-Run everything below from your **Ubuntu machine in Oracle VirtualBox**. This is the production-realistic choice: production Terraform/kubectl/helm work happens on **Linux** (CI runners, Jenkins agents, GitOps runners) — not from a Windows shell (which was the old draft's approach and isn't a pattern you'd see in a real project). Everything here is **outbound to AWS** on the public internet, so no inbound firewall / VirtualBox port-forwarding / cloud-NSG changes are needed.
+Run everything below from your **Azure VM** (the same Ubuntu VM already hosting the Trivy server from Phase 2). This is the production-realistic choice: production Terraform/kubectl/helm work happens on **Linux** (CI runners, Jenkins agents, GitOps runners) — not from a Windows shell, which isn't a pattern you'd see in a real project.
 
-**VirtualBox networking note:** the VM's default **NAT** adapter gives outbound internet but no public inbound IP — which is all this project needs (like the Phase 2 Jenkins box). If `apt update` or `curl` ever times out, the first things to check are the VM network adapter (attached to NAT) and host internet. Clipboard sharing helps for copying the `kubectl get ingress` ALB hostname into a browser.
+**Connect to the Azure VM over SSH** (from your Windows/Linux workstation — you already have the keypair from Phase 2):
+```bash
+ssh -i ~/.ssh/<your-private-key>.pem azureuser@<AZURE_VM_PUBLIC_IP>
+sudo apt-get update        # once in, refresh index before installing
+```
+Everything here is **outbound to AWS** on the public internet, so no Azure NSG changes are needed for the work in this guide (the 8082 Trivy inbound rule Phase 2 configured stays as-is and doesn't conflict). One heads-up: on a smaller Azure VM (e.g. B1s/B1ms, 1 vCPU), Terraform/EKS API calls work but `aws eks update-kubeconfig`, `helm`, and `kubectl` feel slow — that's fine, just expect longer waits; run near a NAT'd, always-on connection.
 
-### 1.1 Install / verify (Ubuntu)
+> If your Azure VM can't reach AWS/HashiCorp (DNS or route), first check: NSG outbound rules, local `curl -sI https://releases.hashicorp.com` and `curl -sI https://registry.terraform.io` from the VM. No clipboard/browser needed inside the VM — the ALB URLs are opened from **your own browser** on your workstation (§14).
+
+### 1.1 Install / verify (Ubuntu on the Azure VM)
 ```bash
 sudo apt-get update
 terraform version        # need >= 1.10  (1.10+ required for S3 native locking, §3)
@@ -933,11 +940,13 @@ curl -s  http://$ALB/healthz             # ok (proxied path)
 curl -s  http://$ALB/api/results         # {"lion":N,"tiger":N,...}
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"lion"}' | head -1   # 201
 curl -is -X POST http://$ALB/api/vote -H 'Content-Type: application/json' -d '{"animal":"moose"}' | head -1  # 400
-xdg-open "http://$ALB/"       # open the vote page in the VM's default browser (Ubuntu)
-xdg-open "http://$ALB/admin.html"    # admin results chart
-# (ALB is public internet-facing — you can also open these in ANY browser on the host)
 ```
-Alternatives if a browser is not available: `curl -s http://$ALB/ | head`, then the vote page HTML is the same Phase-1 static page.
+The Azure VM is headless (no browser) — the ALB is **public-internet-facing**, so open these from **your own workstation browser** (Windows/macOS/Linux) — just copy the `$ALB` URL printed by the `kubectl get ingress` output above and paste it into any browser on your laptop:
+```
+http://<ALB-HOSTNAME>/               # vote page
+http://<ALB-HOSTNAME>/admin.html     # admin results chart
+```
+`$ALB` is an environment variable set inside the SSH session — it won't exist in your local shell, so use the literal hostname (e.g. `voting-eks-alb-1234567890.us-east-1.elb.amazonaws.com`) in the browser. Alternatives if you only have the SSH terminal: `curl -s http://$ALB/ | head`, then the vote page HTML is the same Phase-1 static page.
 
 > **Where the load balancer lives:** AWS Console → EC2 → Load Balancers → `voting-eks-alb`. Its target group shows the two worker node IPs hitting NodePort 30080. That's your ingress/LB proof.
 

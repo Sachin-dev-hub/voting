@@ -9,10 +9,10 @@ An end-to-end DevOps project (code → CI/CD → deployment → monitoring). The
 **Phase status (read first):**
 - **Phase 1 — App: ✅ complete and verified** on the user's machine. `make build && make up && make verify` confirmed: all 5 services healthy, votes persist, results render. Runbook: `POC_GUIDE.md`.
 - **Phase 2 — CI/CD (Jenkins + SonarQube + Trivy): ✅ complete (user-verified).** Committed `Jenkinsfile` runs Checkout → SonarScanner → SonarQube analysis (green on `main`) → Docker build → Trivy scan (client/server, server on Azure VM) → push to **Docker Hub `sachinmaskar/voting`** (`:<svc>-<sha8>` immutable + `:<svc>` rolling). Pipeline ends at push — there is intentionally no deploy stage yet. Runbook (with open checklist items like committing `backend/package-lock.json`): `CICD_guide_latest`.
-- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): current phase — plan ready, provisioning not started.** Requirements gathered in `EKS_requirement.md`; step-by-step runbook (Terraform backend/modules → EKS → ALB ingress → Helm → upgrade) in `EKS_guide.md`. No cloud resources exist yet.
+- **Phase 3 — Deploy (Terraform → AWS EKS + Helm): current phase — plan ready (revised), provisioning not started.** Requirements gathered in `EKS_requirement.md`; step-by-step runbook in `EKS_guide.md`. Toolkit decisions made this session (user-driven): **run Terraform/kubectl/helm from the Ubuntu Azure VM** (Phase 2 Trivy VM) via `ssh` — NOT Git Bash/Windows (rejected — not production-realistic), NOT the Oracle VirtualBox VM (had issues). Terraform state locking uses **S3-native `use_lockfile = true`** (Terraform ≥ 1.10) — **no DynamoDB table** (user requirement). No cloud resources exist yet.
 - **Phase 4 — Observability (Prometheus/Grafana/Loki): not started.** Deferred until Phase 3 is verified.
 
-Current work: execute Phase 3 from `EKS_guide.md` (provision EKS cluster with Terraform, deploy the Phase 2 images via Helm behind an ALB ingress). `deploy/` and `monitoring/` do not exist yet — they are created step-by-step by the guide.
+Current work: execute Phase 3 from `EKS_guide.md` on the **Azure VM** (provision EKS cluster with Terraform → S3-native backend/locking, modules, ALB ingress, Helm deploy of Phase 2 images, EKS upgrade doc). `deploy/` and `monitoring/` do not exist yet — they are created step-by-step by the guide. Session start: read `EKS_guide.md` §1 (prereqs on the Azure VM) and answer the open questions in `EKS_requirement.md` §14 before spending money (EKS ~$180–200/mo if left running).
 
 ## Common commands
 
