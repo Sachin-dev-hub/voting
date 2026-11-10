@@ -130,10 +130,10 @@ Use **us-east-1**. Confirm no glaring service limit blockers (`aws support` not 
 
 ### 2.3 Budget alarm FIRST (before any apply)
 ```bash
-# Creates a cost budget: $50 monthly forecast, alerts at 80%.
+# Creates a cost budget: $25 monthly forecast, alerts at 80%.
 aws budgets create-budget \
   --account-id $(aws sts get-caller-identity --query Account --output text) \
-  --budget '{"BudgetLimit":{"Amount":"50","Unit":"USD"},"BudgetType":"COST","TimeUnit":"MONTHLY","BudgetName":"voting-eks-monthly"}' \
+  --budget '{"BudgetLimit":{"Amount":"25","Unit":"USD"},"BudgetType":"COST","TimeUnit":"MONTHLY","BudgetName":"voting-eks-monthly"}' \
   --notifications-with-subscribers '[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"EMAIL","Address":"YOUR_EMAIL@EXAMPLE.COM"}]}]'
 ```
 (Go to Cost Explorer → Budgets in the console if CLI is easier. The point: get a canary email.)
